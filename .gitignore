@@ -3,3 +3,8 @@ node_modules/
 .wxt/
 dist/
 *.log
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+.env.*

@@ -142,7 +142,7 @@ npm install
 npm run build              # then chrome://extensions → Developer mode → Load unpacked → .output/chrome-mv3
 ```
 
-Open Gmail (or the demo inbox at <http://127.0.0.1:8000/demo/mail.html>), reply to a mail and start typing. See [DEMO.md](DEMO.md) for the full demo script and example questions.
+Open Gmail (or the demo inbox at <http://127.0.0.1:8000/demo/mail.html>), reply to a mail and start typing.
 
 ```bash
 npm run backend:test       # security + ranking tests

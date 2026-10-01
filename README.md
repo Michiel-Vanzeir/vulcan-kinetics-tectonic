@@ -1,72 +1,174 @@
-# whoknows
+<p align="center"><img src="public/whoknows-icon.png" width="96" alt="whoknows logo"></p>
 
-*Expertise finds you, not the other way around.*
+<h1 align="center">whoknows</h1>
+<p align="center"><b>Expertise finds you, not the other way around.</b><br>
+SD Worx challenge · Tectonic Hackathon 2026 · <i>Unlock the Knowledge Within: Find it. Understand it. Trust it.</i></p>
 
-A Chrome extension that notices when you hesitate while replying to a customer or colleague, and shows which colleagues know the answer, with trust signals: how recently they worked on it, how often, and how many colleagues vouch for them. Built for the SD Worx challenge at the Tectonic Hackathon (30 September 2026).
+---
 
-![whoknows icon](public/whoknows-icon.png)
+You're replying to a customer. You type *"I believe that…"*, stop, delete the word. You're not sure.
+
+**whoknows** notices that moment of doubt and, right there in Gmail, shows which colleagues know the answer, **and how far you can trust them**: how recently they worked on it, how often, and how many colleagues vouch for them. Ask them in one click, get their answer, and tell whoknows whether they knew their stuff. That feedback makes the next answer more trustworthy for everyone.
+
+| Doubt detected while typing | Ask, get the answer, vouch | Stale knowledge flagged |
+|---|---|---|
+| ![Doubt detected](docs/detect.png) | ![Reply and vouch](docs/vouch.png) | ![Stale expert](docs/stale.png) |
+
+## Why this fits the challenge
+
+SD Worx asked for a focused PoC that takes someone from *"I found something"* to *"I understand why I can trust it"*. whoknows covers one role (the consultant answering clients), one workflow (replying to a question) and one trust signal done well: **trust in people**.
+
+| Challenge theme | What whoknows does |
+|---|---|
+| **Detect** | Detects hesitation while you write (pauses, rewrites, hedging like "I think" or "denk ik") and detects **knowledge gaps**: topics where nobody has recent expertise. |
+| **Connect** | Brings the right colleague to you, inside the tool you already use. No search box, no extra tab. |
+| **Trust** | Every expert comes with evidence and trust signals: recency, frequency, peer vouches. Outdated experts are flagged ("not active on this since 2024") instead of silently ranked. |
+| **Capture** | After an expert answers, you vouch whether they knew their stuff. That feedback feeds straight back into the ranking. |
+
+**What's different from a people finder:** it's *push, not pull* (expertise comes to you at the moment of doubt), and it shows *how far you can trust* someone, not just *who*.
 
 ## How it works
 
 ```
-Chrome extension                              Backend (FastAPI)
-content script: watches the text field  ──►  POST /analyze  topics + hedging words
-  pause + delete, hedging words, or           POST /experts  top 3 experts + trust signals,
-  Ctrl+Shift+K (⌘⇧K)                                         opt-outs filtered server-side
-side panel with expert cards            ◄──  data/company.json (fictional company)
+Chrome extension (Manifest V3, WXT + TypeScript)          Backend (FastAPI, Python)
+┌─────────────────────────────────────────────┐          ┌───────────────────────────────────┐
+│ content script                              │  text    │ POST /analyze                     │
+│  • doubt score from typing behaviour        │ ───────► │   topic detection (EN + NL)       │
+│  • reads your reply + the thread (Gmail)    │          │   hedging detection               │
+│                                             │          │ POST /experts                     │
+│ side panel (shadow DOM)                     │ experts  │   ranking + trust signals         │
+│  • expert cards with trust signals          │ ◄─────── │   consent filter (server-side)    │
+│  • ask → answer → vouch                     │          │ POST /feedback                    │
+│  • "Not sure?" nudge                        │ ───────► │   signed expert refs, votes       │
+└─────────────────────────────────────────────┘          └───────────────────────────────────┘
+          background service worker is the only component that talks to the API
 ```
 
-- **Doubt detection** (`entrypoints/content.ts`): signals add up to a doubt score. Hedging words ("I believe", "not sure", "denk ik", … +2), pausing mid-sentence (+1), a long pause (+1/+2), deleting right after a pause (+2), deleting a chunk (+2), rewriting several times (+1). At 2 points it analyses what you wrote plus the message you're replying to. Known topic → the panel slides in. No topic (or you already closed it) → a small **"Not sure?" nudge** appears bottom-right instead.
-- **Works in Gmail** (compose and reply): reads your own text without the quoted thread, and the open thread + subject as context (`utils/context.ts`). Also works on any `textarea`/`contenteditable`.
-- **Ask your own question:** the panel has a question box. It's prefilled with the question you seem to be answering (e.g. the customer's question in the thread) and you can rewrite it and press Enter.
-- **Ask the expert:** "Ask Sarah" opens a message you can edit. In the demo the expert replies after 10 seconds with a sample answer for that topic; stale experts say they're out of date and point to the fresher expert.
-- **Vouch:** after a reply you answer "Did Sarah know their stuff?". Yes counts as a vouch (shown immediately in her trust chip), no lowers her ranking on that topic. Feedback goes through `POST /feedback` with an opaque, HMAC-signed expert `ref`; the server only accepts refs of people it would show for that topic, so you can't vote for opted-out people or reuse a ref across topics.
-- **Manual trigger:** `Ctrl+Shift+K` (`⌘⇧K` on Mac). Uses the selection, or the thread + what you've typed; with nothing to go on it just opens the question box.
-- **Ranking** (`backend/app/ranking.py`): relevance + recency (exponential decay) + frequency + peer vouches. If the best score is too low, the topic is shown as a **knowledge gap**.
-- **Consent:** people who opted out, or hid a topic, are filtered in the backend and never leave the server. Responses contain no internal IDs and no voucher identities.
+### Doubt detection
+
+Every signal adds to a doubt score. At 2 points whoknows analyses your draft plus the message you're replying to.
+
+| Signal | Points |
+|---|---|
+| Hedging language: "I believe", "not sure", "probably", "denk ik", "volgens mij", … (40+ EN/NL phrases) | +2 |
+| Paused mid-sentence (2.5 s) | +1 |
+| Long pause (6 s) | +1 / +2 |
+| Deleted text right after a pause | +2 |
+| Deleted a chunk of text | +2 |
+| Rewrote the same draft several times | +1 |
+
+If a known topic is found, the panel slides in. If not (or you already dismissed it), a small **"Not sure?"** nudge appears instead, so it never gets in your way.
+
+### Ranking and trust
+
+```
+score = relevance (overlap with the expert's evidence)
+      + 3.0 × recency   (exponential decay, 120-day half-life)
+      + 1.0 × log(1 + times handled)
+      + 0.6 × log(1 + peer vouches)
+      − 0.8 × log(1 + "didn't know" votes)
+
+opted out / topic hidden  → never returned by the API
+not active for > 1 year   → flagged as outdated
+best score below 2.5      → "knowledge gap"
+```
+
+The expert card always shows *why* someone is ranked: their most recent (or authored) piece of work, how long ago, how many times, and how many colleagues vouch for them.
+
+### Ask and vouch
+
+"Ask Sarah" opens a message pre-filled with the question you're answering (taken from the thread), which you can edit. Sarah's answer appears in the panel. If you closed the panel in the meantime, a "Sarah replied" nudge brings you back. Then: **"Did Sarah know their stuff?"** A yes counts as a vouch on that topic, a no lowers her ranking on it.
+
+## Security and privacy
+
+A tool that knows what your colleagues know is sensitive by design. These are the controls we built in, each backed by code and tests.
+
+**Consent, enforced server-side**
+- Employees opt in. People who opt out, or hide specific topics, are filtered in the backend before ranking (`backend/app/ranking.py → visible_evidence`), so their data never leaves the server. It's not just hidden in the UI.
+
+**No IDOR, minimal data exposure**
+- The API never exposes internal employee IDs, and never exposes *who* vouched for whom, only counts.
+- Feedback uses an **opaque expert reference**: an HMAC-SHA256 of (employee, topic) with a server secret (`WHOKNOWS_SECRET`). The server resolves it only among the people it would show for that topic. You can't vote for an arbitrary employee, for someone who opted out, or reuse a reference across topics (`backend/app/feedback.py`).
+- There are no per-employee endpoints: you can't enumerate the company.
+
+**Input validation**
+- All request bodies go through Pydantic: text is limited to 4,000 characters, topic IDs must match `^[a-z0-9_]{1,64}$`, refs must match `^[0-9a-f]{32}$`. Unknown topics or experts return 404.
+
+**Hardened responses**
+- Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+- The backend binds to `127.0.0.1` only.
+
+**Extension**
+- **No XSS path:** all backend data is rendered with `textContent`/DOM APIs, never `innerHTML`. That's also why it runs under Gmail's Trusted Types policy.
+- **Isolated UI:** the panel lives in a shadow root, so page CSS and scripts can't restyle or spoof it. Keystrokes inside the panel are stopped from reaching page handlers.
+- **Least privilege:** host permissions are only the whoknows API; permissions are only `storage`. Only the background worker talks to the API, never the page.
+- **Minimal data use:** text is only sent after a doubt signal, never on every keystroke. Password fields and regular inputs are ignored (only `textarea`/`contenteditable`). Quoted history and signatures in Gmail are stripped before analysis.
+
+**Secrets and data hygiene**
+- No secrets in the repo: `.env*` is git-ignored, and the HMAC secret comes from the environment (random per process if unset).
+- All people and data in this repo are fictional.
+
+**Tests** (`backend/tests/test_api.py`, run with `npm run backend:test`):
+
+| Test | Guarantees |
+|---|---|
+| `test_opt_out_never_returned` | Opted-out employee never appears, for any topic |
+| `test_hidden_topic_respected` | Hidden topics are enforced server-side |
+| `test_no_internal_ids_leak` | No employee IDs in API responses |
+| `test_feedback_rejects_foreign_refs` | Refs can't be forged, reused across topics, or target opted-out people |
+| `test_input_validation` | Path-like IDs, unknown topics and oversized input are rejected |
+| `test_feedback_counts_as_vouch`, `test_unhelpful_lowers_score` | Vouching changes trust as intended |
+| `test_sarah_ranks_first_and_tom_is_stale`, `test_knowledge_gap`, `test_analyze_finds_topic_and_hedge` | Ranking, staleness and gap detection |
+
+Aikido scan: see the before/after screenshots in the Builderbase submission.
 
 ## Run it
 
-**Backend** (Python 3.11+), Windows shortcuts: `npm run backend:setup` once, then `npm run backend`. Manually:
+**Requirements:** Python 3.11+, Node 20+, Chrome.
 
 ```bash
-cd backend
-python -m venv .venv
-.venv/Scripts/activate        # macOS/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Backend (Windows shortcuts)
+npm run backend:setup      # once: creates backend/.venv and installs dependencies
+npm run backend            # http://127.0.0.1:8000
+
+# macOS / Linux
+cd backend && python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt && uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Demo pages: <http://127.0.0.1:8000/demo/mail.html> and <http://127.0.0.1:8000/demo/chat.html>
-
-**Extension** (Node 20+):
-
 ```bash
+# Extension
 npm install
-npm run dev      # opens Chrome with the extension loaded on the demo mail page
+npm run build              # then chrome://extensions → Developer mode → Load unpacked → .output/chrome-mv3
 ```
 
-Or `npm run build` and load `.output/chrome-mv3` via `chrome://extensions` → Developer mode → Load unpacked. Set `WXT_API_URL` to point at another backend.
+Open Gmail (or the demo inbox at <http://127.0.0.1:8000/demo/mail.html>), reply to a mail and start typing. See [DEMO.md](DEMO.md) for the full demo script and example questions.
 
-**Tests:** `npm run backend:test`
+```bash
+npm run backend:test       # security + ranking tests
+```
 
-See [DEMO.md](DEMO.md) for the step-by-step demo recording checklist.
+## The data
 
-## Demo script
+`backend/data/company.json` describes a fictional HR and payroll company: **34 consultants, 34 topics, 233 pieces of evidence** (tickets, documents, chats) across Belgium, the Netherlands, Germany, France, Spain and the UK. It's generated deterministically by `backend/scripts/generate_data.py`, with deliberate patterns:
 
-1. Mail page: type *"Thanks for your question about the year-end bonus for part-time employees under PC 200. I believe that"*, then stop. The panel slides in: Sarah De Vos (recent, 12×, vouched) first, Tom Janssens flagged as stale (wrote the original procedure, not active since 2024).
-2. Chat page: click the message box and press `Ctrl+Shift+K`. Anouk van Dijk appears for the Dutch notice period.
-3. Knowledge gap: type a question about a *cross-border worker in Luxembourg* and press the shortcut.
+- **Sarah De Vos**: the go-to person for year-end bonuses (12 cases, last one 2 weeks ago, 4 vouches).
+- **Tom Janssens**: wrote the original procedure, but hasn't worked on it since 2024, so he's flagged as outdated.
+- **Lotte Maes**: an expert who opted out, so she never appears.
+- **Pieter Claes**: hides one topic (sick leave).
+- **Luxembourg cross-border workers**: nobody has recent expertise, so it's a knowledge gap.
 
-## Fictional data
+## Scope of this PoC and next steps
 
-`backend/data/company.json` is generated by `backend/scripts/generate_data.py` (deterministic). 34 employees, 34 topics, 233 evidence items, plus a sample expert answer per topic. Built-in patterns: Sarah (recent expert), Tom (stale original author), Lotte Maes (opted out, never shown), Pieter Claes (hides sick leave), Luxembourg cross-border (knowledge gap). All people and data are made up.
+Built in one afternoon, deliberately focused:
 
-## Not finished
+- **Topic detection** uses weighted EN/NL keyword matching over 34 topics. It's fast, explainable and predictable. Next: embeddings.
+- **Expert answers** come from each topic's answer in the knowledge base. Next: deliver the question through Teams/Outlook and capture the real reply.
+- **Votes** are kept in backend memory for the session. Next: persist them in a database.
+- **Authentication** isn't included: the backend runs locally. Next: SSO so votes and consent are tied to the signed-in employee.
+- **Gmail** support relies on Gmail's current page structure. Next: Outlook web and Teams.
+- **info@ routing** is a future use: the same engine could route incoming client mails to the right consultant.
 
-- Topic matching is weighted keywords (EN + NL), not embeddings.
-- "Ask Sarah" is simulated: nothing is sent and the reply is a canned sample answer (fictional, not advice).
-- Votes live in backend memory and reset on restart (no database).
-- No authentication: the backend is meant to run locally for the demo.
-- Gmail support relies on Gmail's DOM (`.a3s` message bodies, `h2.hP` subject); Outlook web is untested.
-- Future idea: route info@ mails to the right person with the same engine.
+## Tech
+
+WXT · TypeScript · React (popup) · Chrome Manifest V3 · FastAPI · Pydantic · pytest

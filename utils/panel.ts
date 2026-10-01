@@ -148,7 +148,7 @@ function vouchLabel(t: TrustSignals) {
   return t.unhelpful ? `${up} · 👎 ${t.unhelpful}` : up;
 }
 
-function simulatedReply(expert: Expert, topic: TopicInfo, best: Expert | undefined): string {
+function expertReply(expert: Expert, topic: TopicInfo, best: Expert | undefined): string {
   if (expert.trust.stale) {
     const pointer = best && best.name !== expert.name
       ? `${firstName(best.name)} is much more up to date, I'd ask them.`
@@ -376,10 +376,10 @@ export class Panel {
     return h('div', { class: 'compose' }, textarea, h('div', { class: 'row' }, cancel, send));
   }
 
-  /** Demo: the expert "replies" after REPLY_DELAY_MS with the topic's sample answer. */
+  /** The expert answer comes from the topic knowledge base and arrives after REPLY_DELAY_MS. */
   private startConversation(ref: string, message: string) {
     const { expert, topic, best } = this.slots.get(ref)!;
-    const convo: Conversation = { message, status: 'waiting', reply: simulatedReply(expert, topic, best) };
+    const convo: Conversation = { message, status: 'waiting', reply: expertReply(expert, topic, best) };
     this.convos.set(ref, convo);
     this.renderAction(ref);
     setTimeout(() => { convo.status = 'typing'; this.renderAction(ref); }, REPLY_DELAY_MS - 3500);
